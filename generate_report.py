@@ -473,26 +473,33 @@ def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
     for name in all_names:
         target_companies.setdefault(name, None)
 
+    # 100点満点方式:50点を「中立」の基準点とし、好材料/悪材料に応じて加減点する。
+    # 重みは目安であり、個別ニュースでの言及を最も重視している。
+    WEIGHT_MACRO = 5          # マクロ要因(為替・金利)のセクター加点1につき
+    WEIGHT_SECTOR_NEWS = 8    # セクター単位のニュース傾向(net)1につき
+    WEIGHT_INDIVIDUAL = 15    # 個別銘柄への好材料/悪材料ニュース1件につき
+    BASE_SCORE = 50
+
     results = []
     for company in target_companies:
         if len(company) < 2:
             continue
         sector = company_sector_map.get(company)
-        score = 0
+        score = BASE_SCORE
         reasons = []
 
         if sector:
             macro_score = macro_by_sector.get(sector, 0)
             if macro_score != 0:
-                score += macro_score
-                reasons.append(f"セクター({sector})のマクロ要因: {macro_score:+d}点")
+                score += macro_score * WEIGHT_MACRO
+                reasons.append(f"セクター({sector})のマクロ要因: {macro_score:+d}(点数へ換算 {macro_score * WEIGHT_MACRO:+d})")
 
             sent = sentiment_by_sector.get(sector)
             if sent:
                 net = sent["positive"] - sent["negative"]
                 if net != 0:
-                    score += net
-                    reasons.append(f"セクターニュース傾向: {sent['direction']}")
+                    score += net * WEIGHT_SECTOR_NEWS
+                    reasons.append(f"セクターニュース傾向: {sent['direction']}({net * WEIGHT_SECTOR_NEWS:+d})")
 
         pos_headlines, neg_headlines = [], []
         for it in news_items:
@@ -505,13 +512,15 @@ def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
                 neg_headlines.append(it["title"])
 
         if pos_headlines:
-            score += 2 * len(pos_headlines)
+            score += WEIGHT_INDIVIDUAL * len(pos_headlines)
             reasons.append("個別ニュース(好材料): " + "、".join(pos_headlines[:2]))
         if neg_headlines:
-            score -= 2 * len(neg_headlines)
+            score -= WEIGHT_INDIVIDUAL * len(neg_headlines)
             reasons.append("個別ニュース(悪材料): " + "、".join(neg_headlines[:2]))
 
-        if score != 0:
+        score = max(0, min(100, score))
+
+        if score != BASE_SCORE:
             results.append({"company": company, "sector": sector, "score": score, "reasons": reasons})
 
     results.sort(key=lambda x: -x["score"])
@@ -722,14 +731,14 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
     ranking_html = ""
     if stock_ranking:
         for i, r in enumerate(stock_ranking[:10], start=1):
-            sentiment = "positive" if r["score"] > 0 else "negative"
+            sentiment = "positive" if r["score"] > 55 else ("negative" if r["score"] < 45 else "neutral")
             sub_html = "".join(f"<div class='card-sub'>・{reason}</div>" for reason in r["reasons"])
             sector_label = f" ({r['sector']})" if r.get("sector") else ""
             ranking_html += f"""
             <div class="card card-{sentiment}">
               <div class="card-head">
                 <span class="card-title"><span class="rank">{i}</span>{r['company']}<span style="color:var(--text-mute); font-weight:400; font-size:11.5px;">{sector_label}</span></span>
-                <span class="value-badge value-{sentiment}">{r['score']:+d}点</span>
+                <span class="value-badge value-{sentiment}">{r['score']}点 / 100点</span>
               </div>
               {sub_html}
             </div>
