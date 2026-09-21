@@ -78,7 +78,7 @@
 <body>
   <header>
     <h1>今週の相場レポート</h1>
-    <div class="updated">2026年09月21日 11:47 生成・個人利用(ルールベース判定)</div>
+    <div class="updated">2026年09月21日 11:58 生成・個人利用(ルールベース判定)</div>
   </header>
 
   <h2>市況サマリー</h2>
@@ -105,7 +105,15 @@
     
 
   <h2>あなたの登録銘柄</h2>
-  <p>WATCHLISTに銘柄が登録されていません(generate_report.py の WATCHLIST に追加してください)。</p>
+  <div id="wl-add-row" style="display:flex; gap:8px; margin-bottom:14px;">
+    <input id="wl-input" type="text" placeholder="証券コード or 会社名"
+      style="flex:1; padding:10px 12px; background:var(--panel); border:1px solid var(--border);
+             border-radius:4px; color:var(--text); font-size:14px;">
+    <button id="wl-add-btn"
+      style="padding:10px 16px; background:var(--gold); color:#0E1015; border:none;
+             border-radius:4px; font-weight:700; font-size:13px;">追加</button>
+  </div>
+  <div id="wl-list"><p>読み込み中...</p></div>
 
   <h2>短観 業況判断DI</h2>
   
@@ -585,5 +593,113 @@
     使用していません。実際の株価動向を保証するものではなく、
     投資助言でもありません。最終的な投資判断はご自身で行ってください。
   </p>
+
+<script>
+// スマホから登録銘柄を追加・削除するための管理UI。
+// Supabaseに直接アクセスする(anon/publishableキーはブラウザに公開される前提のキーです)。
+const SUPABASE_URL = "https://tqvxmzyxiikhxiipdlss.supabase.co";
+const SUPABASE_KEY = "sb_publishable_9GkFXJZFQDQIBOwDvJNPbw_TaSPAwOu";
+const WATCHLIST_SCORES = {};
+
+function sbHeaders(extra) {
+  return Object.assign({
+    apikey: SUPABASE_KEY,
+    Authorization: "Bearer " + SUPABASE_KEY,
+    "Content-Type": "application/json",
+  }, extra || {});
+}
+
+async function fetchWatchlist() {
+  const res = await fetch(SUPABASE_URL + "/rest/v1/watchlist?select=*&order=created_at.asc", {
+    headers: sbHeaders(),
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+async function addWatchlistItem(query) {
+  await fetch(SUPABASE_URL + "/rest/v1/watchlist", {
+    method: "POST",
+    headers: sbHeaders({ Prefer: "return=minimal" }),
+    body: JSON.stringify({ query: query }),
+  });
+}
+
+async function deleteWatchlistItem(id) {
+  await fetch(SUPABASE_URL + "/rest/v1/watchlist?id=eq." + id, {
+    method: "DELETE",
+    headers: sbHeaders(),
+  });
+}
+
+function sentimentOf(score) {
+  if (score > 55) return "positive";
+  if (score < 45) return "negative";
+  return "neutral";
+}
+
+function renderWatchlist(items) {
+  const container = document.getElementById("wl-list");
+  if (!items.length) {
+    container.innerHTML = "<p>まだ登録銘柄がありません。上の欄から証券コードか会社名を入力して追加してください。</p>";
+    return;
+  }
+  container.innerHTML = "";
+  items.forEach(function (item) {
+    const scored = WATCHLIST_SCORES[item.query];
+    const sentiment = scored ? sentimentOf(scored.score) : "neutral";
+    const card = document.createElement("div");
+    card.className = "card card-" + sentiment;
+    const title = scored ? scored.company : item.query;
+    const sectorLabel = scored && scored.sector ? " (" + scored.sector + ")" : "";
+    const badge = scored
+      ? "<span class='value-badge value-" + sentiment + "'>" + scored.score + "点 / 100点</span>"
+      : "<span style='font-size:11px; color:var(--text-mute);'>次回更新待ち</span>";
+    const reasonsHtml = scored && scored.reasons && scored.reasons.length
+      ? scored.reasons.map(function (r) { return "<div class='card-sub'>・" + r + "</div>"; }).join("")
+      : "<div class='card-sub'>・目立った材料なし(中立)、またはまだ計算されていません</div>";
+    card.innerHTML =
+      "<div class='card-head'>" +
+        "<span class='card-title'>" + title +
+          "<span style='color:var(--text-mute); font-weight:400; font-size:11.5px;'>" + sectorLabel + "</span>" +
+        "</span>" +
+        "<div style='display:flex; align-items:center; gap:10px;'>" +
+          badge +
+          "<button data-id='" + item.id + "' class='wl-delete-btn' " +
+            "style='background:none; border:none; color:var(--negative); font-size:18px; " +
+            "line-height:1; cursor:pointer; padding:2px 4px;'>×</button>" +
+        "</div>" +
+      "</div>" +
+      reasonsHtml;
+    container.appendChild(card);
+  });
+  container.querySelectorAll(".wl-delete-btn").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      btn.disabled = true;
+      await deleteWatchlistItem(btn.getAttribute("data-id"));
+      await reloadWatchlist();
+    });
+  });
+}
+
+async function reloadWatchlist() {
+  const items = await fetchWatchlist();
+  renderWatchlist(items);
+}
+
+document.getElementById("wl-add-btn").addEventListener("click", async function () {
+  const input = document.getElementById("wl-input");
+  const value = input.value.trim();
+  if (!value) return;
+  input.value = "";
+  await addWatchlistItem(value);
+  await reloadWatchlist();
+});
+document.getElementById("wl-input").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") document.getElementById("wl-add-btn").click();
+});
+
+reloadWatchlist();
+</script>
 </body>
 </html>
