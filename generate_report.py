@@ -13,6 +13,7 @@ AIは使わず、あらかじめ用意した定型文パターンで文章を組
 実行すると market_report.html が作成され、自動的にブラウザで開く。
 """
 
+import json
 import os
 from datetime import datetime
 
@@ -24,10 +25,18 @@ DB_PATH = "market_data.db"  # 互換性のために残しているが、Supabase
 # Vercelがこのリポジトリを見ていれば、pushされると自動でデプロイされる。
 OUTPUT_HTML = "index.html"
 
-# ここに、毎朝チェックしたい銘柄を追加してください。
-# 証券コード(例: "7203")でも、会社名の一部(例: "トヨタ")でも指定できます。
-# (自動的に東証上場銘柄一覧から正式名称を探して使います)
+# WATCHLIST定数は使わなくなりました(Supabaseの watchlist テーブルで管理します)。
+# スマホのレポート画面から直接、証券コードや会社名を追加・削除できます。
 WATCHLIST = []
+
+
+def get_watchlist_entries():
+    """Supabaseの watchlist テーブルから、現在登録されている項目を取得する。"""
+    try:
+        rows = sb.select("watchlist", {"select": "id,query", "order": "created_at.asc"})
+    except Exception:
+        rows = []
+    return rows
 
 
 # ============================================================
@@ -608,29 +617,43 @@ def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
     return results
 
 
-def get_watchlist_scores(watchlist, macro_scores, sector_sentiment, news_items):
+def get_watchlist_scores(watchlist_entries, macro_scores, sector_sentiment, news_items):
     """
     ウォッチリスト(登録銘柄)のスコアを、点数に関わらず常に計算して返す。
-    WATCHLISTの項目は証券コード・会社名のどちらでも指定できる
-    (resolve_watchlist_entriesで正式名称に変換してから計算する)。
+    各項目(証券コード・会社名のどちらでも可)は、resolve_watchlist_entriesで
+    正式名称に変換してから計算する。
 
-    戻り値: [{"company":..., "sector":..., "score": n, "reasons": [...]}, ...]
+    引数:
+      watchlist_entries: [{"id":..., "query":...}, ...] (get_watchlist_entries() の結果)
+
+    戻り値: [{"id":..., "query":..., "company":..., "sector":..., "score": n,
+              "reasons": [...]}, ...]
     """
-    if not watchlist:
+    if not watchlist_entries:
         return []
     macro_by_sector = {m["sector"]: m["score"] for m in macro_scores}
     sentiment_by_sector = {s["sector"]: s for s in sector_sentiment}
     company_sector_map, _ = _get_company_sector_map()
 
-    resolved_names = resolve_watchlist_entries(watchlist)
+    queries = [e["query"] for e in watchlist_entries]
+    resolved_names = resolve_watchlist_entries(queries)
 
     results = []
-    for company in resolved_names:
+    for entry, company in zip(watchlist_entries, resolved_names):
         sector = company_sector_map.get(company)
         score, reasons = _compute_company_score(
             company, sector, macro_by_sector, sentiment_by_sector, news_items
         )
-        results.append({"company": company, "sector": sector, "score": score, "reasons": reasons})
+        results.append(
+            {
+                "id": entry["id"],
+                "query": entry["query"],
+                "company": company,
+                "sector": sector,
+                "score": score,
+                "reasons": reasons,
+            }
+        )
     results.sort(key=lambda x: -x["score"])
     return results
 
@@ -836,21 +859,19 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
         for s in notable_stocks[:10]:
             stocks_html += render_card(s["company"], "neutral", sublines=s["headlines"])
 
-    watchlist_html = ""
-    if watchlist_scores:
-        for r in watchlist_scores:
-            sentiment = "positive" if r["score"] > 55 else ("negative" if r["score"] < 45 else "neutral")
-            sub_html = "".join(f"<div class='card-sub'>・{reason}</div>" for reason in r["reasons"])
-            sector_label = f" ({r['sector']})" if r.get("sector") else ""
-            watchlist_html += f"""
-            <div class="card card-{sentiment}">
-              <div class="card-head">
-                <span class="card-title">{r['company']}<span style="color:var(--text-mute); font-weight:400; font-size:11.5px;">{sector_label}</span></span>
-                <span class="value-badge value-{sentiment}">{r['score']}点 / 100点</span>
-              </div>
-              {sub_html if sub_html else "<div class='card-sub'>・目立った材料なし(中立)</div>"}
-            </div>
-            """
+    # ウォッチリストは静的HTMLではなく、ページ内のJavaScriptが
+    # Supabaseから直接読み込んで描画する(スマホから追加・削除できるようにするため)。
+    # ここではPythonが計算済みのスコアを、queryをキーにしたJSONとして埋め込むだけ。
+    watchlist_scores_by_query = {
+        r["query"]: {
+            "company": r["company"],
+            "sector": r["sector"],
+            "score": r["score"],
+            "reasons": r["reasons"],
+        }
+        for r in (watchlist_scores or [])
+    }
+    watchlist_scores_json = json.dumps(watchlist_scores_by_query, ensure_ascii=False)
 
     ranking_html = ""
     if stock_ranking:
@@ -959,7 +980,15 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
   {rows_html}
 
   <h2>あなたの登録銘柄</h2>
-  {watchlist_html if watchlist_html else '<p>WATCHLISTに銘柄が登録されていません(generate_report.py の WATCHLIST に追加してください)。</p>'}
+  <div id="wl-add-row" style="display:flex; gap:8px; margin-bottom:14px;">
+    <input id="wl-input" type="text" placeholder="証券コード or 会社名"
+      style="flex:1; padding:10px 12px; background:var(--panel); border:1px solid var(--border);
+             border-radius:4px; color:var(--text); font-size:14px;">
+    <button id="wl-add-btn"
+      style="padding:10px 16px; background:var(--gold); color:#0E1015; border:none;
+             border-radius:4px; font-weight:700; font-size:13px;">追加</button>
+  </div>
+  <div id="wl-list"><p>読み込み中...</p></div>
 
   <h2>短観 業況判断DI</h2>
   {tankan_html if tankan_html else '<p>データがまだありません。</p>'}
@@ -988,6 +1017,114 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
     使用していません。実際の株価動向を保証するものではなく、
     投資助言でもありません。最終的な投資判断はご自身で行ってください。
   </p>
+
+<script>
+// スマホから登録銘柄を追加・削除するための管理UI。
+// Supabaseに直接アクセスする(anon/publishableキーはブラウザに公開される前提のキーです)。
+const SUPABASE_URL = "{sb.SUPABASE_URL}";
+const SUPABASE_KEY = "{sb.SUPABASE_KEY}";
+const WATCHLIST_SCORES = {watchlist_scores_json};
+
+function sbHeaders(extra) {{
+  return Object.assign({{
+    apikey: SUPABASE_KEY,
+    Authorization: "Bearer " + SUPABASE_KEY,
+    "Content-Type": "application/json",
+  }}, extra || {{}});
+}}
+
+async function fetchWatchlist() {{
+  const res = await fetch(SUPABASE_URL + "/rest/v1/watchlist?select=*&order=created_at.asc", {{
+    headers: sbHeaders(),
+  }});
+  if (!res.ok) return [];
+  return res.json();
+}}
+
+async function addWatchlistItem(query) {{
+  await fetch(SUPABASE_URL + "/rest/v1/watchlist", {{
+    method: "POST",
+    headers: sbHeaders({{ Prefer: "return=minimal" }}),
+    body: JSON.stringify({{ query: query }}),
+  }});
+}}
+
+async function deleteWatchlistItem(id) {{
+  await fetch(SUPABASE_URL + "/rest/v1/watchlist?id=eq." + id, {{
+    method: "DELETE",
+    headers: sbHeaders(),
+  }});
+}}
+
+function sentimentOf(score) {{
+  if (score > 55) return "positive";
+  if (score < 45) return "negative";
+  return "neutral";
+}}
+
+function renderWatchlist(items) {{
+  const container = document.getElementById("wl-list");
+  if (!items.length) {{
+    container.innerHTML = "<p>まだ登録銘柄がありません。上の欄から証券コードか会社名を入力して追加してください。</p>";
+    return;
+  }}
+  container.innerHTML = "";
+  items.forEach(function (item) {{
+    const scored = WATCHLIST_SCORES[item.query];
+    const sentiment = scored ? sentimentOf(scored.score) : "neutral";
+    const card = document.createElement("div");
+    card.className = "card card-" + sentiment;
+    const title = scored ? scored.company : item.query;
+    const sectorLabel = scored && scored.sector ? " (" + scored.sector + ")" : "";
+    const badge = scored
+      ? "<span class='value-badge value-" + sentiment + "'>" + scored.score + "点 / 100点</span>"
+      : "<span style='font-size:11px; color:var(--text-mute);'>次回更新待ち</span>";
+    const reasonsHtml = scored && scored.reasons && scored.reasons.length
+      ? scored.reasons.map(function (r) {{ return "<div class='card-sub'>・" + r + "</div>"; }}).join("")
+      : "<div class='card-sub'>・目立った材料なし(中立)、またはまだ計算されていません</div>";
+    card.innerHTML =
+      "<div class='card-head'>" +
+        "<span class='card-title'>" + title +
+          "<span style='color:var(--text-mute); font-weight:400; font-size:11.5px;'>" + sectorLabel + "</span>" +
+        "</span>" +
+        "<div style='display:flex; align-items:center; gap:10px;'>" +
+          badge +
+          "<button data-id='" + item.id + "' class='wl-delete-btn' " +
+            "style='background:none; border:none; color:var(--negative); font-size:18px; " +
+            "line-height:1; cursor:pointer; padding:2px 4px;'>×</button>" +
+        "</div>" +
+      "</div>" +
+      reasonsHtml;
+    container.appendChild(card);
+  }});
+  container.querySelectorAll(".wl-delete-btn").forEach(function (btn) {{
+    btn.addEventListener("click", async function () {{
+      btn.disabled = true;
+      await deleteWatchlistItem(btn.getAttribute("data-id"));
+      await reloadWatchlist();
+    }});
+  }});
+}}
+
+async function reloadWatchlist() {{
+  const items = await fetchWatchlist();
+  renderWatchlist(items);
+}}
+
+document.getElementById("wl-add-btn").addEventListener("click", async function () {{
+  const input = document.getElementById("wl-input");
+  const value = input.value.trim();
+  if (!value) return;
+  input.value = "";
+  await addWatchlistItem(value);
+  await reloadWatchlist();
+}});
+document.getElementById("wl-input").addEventListener("keydown", function (e) {{
+  if (e.key === "Enter") document.getElementById("wl-add-btn").click();
+}});
+
+reloadWatchlist();
+</script>
 </body>
 </html>
 """
@@ -1011,7 +1148,8 @@ if __name__ == "__main__":
     theme_heat = analyze_theme_heat(news_items) if news_items else []
     macro_scores = analyze_macro_sector_scores(fx, ust)
     stock_ranking = analyze_stock_ranking(macro_scores, sector_sentiment, news_items)
-    watchlist_scores = get_watchlist_scores(WATCHLIST, macro_scores, sector_sentiment, news_items)
+    watchlist_entries = get_watchlist_entries()
+    watchlist_scores = get_watchlist_scores(watchlist_entries, macro_scores, sector_sentiment, news_items)
     html = generate_html(
         jgb, ust, wti, fx, tankan, commentary,
         sector_sentiment, notable_stocks, theme_heat, macro_scores, stock_ranking, watchlist_scores,
