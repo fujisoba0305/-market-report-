@@ -208,19 +208,6 @@ SECTOR_EXCLUDE_KEYWORDS = {
     "銀行": ["日銀", "日本銀行", "中央銀行"],
 }
 
-NOTABLE_COMPANIES = [
-    "トヨタ", "ホンダ", "日産", "SUBARU", "マツダ",
-    "東京エレクトロン", "アドバンテスト", "レーザーテック", "ディスコ", "ソシオネクスト",
-    "三菱UFJ", "三井住友", "みずほ",
-    "三菱商事", "三井物産", "伊藤忠", "丸紅", "住友商事",
-    "セブン&アイ", "イオン", "ファーストリテイリング", "ニトリ",
-    "NTT", "KDDI", "ソフトバンク",
-    "ENEOS", "出光",
-    "武田薬品", "第一三共", "アステラス",
-    "三菱重工", "IHI", "川崎重工",
-    "任天堂", "ソニー", "パナソニック", "日立", "東芝",
-]
-
 
 def analyze_sector_sentiment(news_items):
     """
@@ -286,11 +273,16 @@ def analyze_sector_sentiment(news_items):
 
 
 def extract_notable_stocks(news_items):
-    """ニュース見出しに登場する、あらかじめ用意した主要企業名を抽出する。"""
+    """
+    ニュース見出しに登場する主要企業名を抽出する。
+    SECTOR_COMPANIES(セクター別の企業リスト)の全企業を対象にすることで、
+    幅広い業種の企業名にヒットしやすくしている。
+    """
+    all_companies = sorted({c for companies in SECTOR_COMPANIES.values() for c in companies})
     results = {}
     for it in news_items:
         text = it["title"] + " " + it["description"]
-        for company in NOTABLE_COMPANIES:
+        for company in all_companies:
             if company in text:
                 results.setdefault(company, []).append(it["title"])
     return [{"company": c, "headlines": h[:2]} for c, h in results.items()]
