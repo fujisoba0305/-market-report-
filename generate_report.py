@@ -24,6 +24,11 @@ DB_PATH = "market_data.db"  # 互換性のために残しているが、Supabase
 # Vercelがこのリポジトリを見ていれば、pushされると自動でデプロイされる。
 OUTPUT_HTML = "index.html"
 
+# ここに、毎朝チェックしたい銘柄を追加してください。
+# 証券コード(例: "7203")でも、会社名の一部(例: "トヨタ")でも指定できます。
+# (自動的に東証上場銘柄一覧から正式名称を探して使います)
+WATCHLIST = []
+
 
 # ============================================================
 # データ取得・判定ロジック
@@ -445,16 +450,29 @@ JPX_INDUSTRY_TO_SECTOR = {
 }
 
 
+_company_master_cache = None
+
+
+def _get_company_master_rows():
+    """company_masterの全行を取得する(1回の実行内ではキャッシュして使い回す)。"""
+    global _company_master_cache
+    if _company_master_cache is not None:
+        return _company_master_cache
+    try:
+        rows = sb.select_all("company_master", {"select": "code,name,industry"})
+    except Exception:
+        rows = []
+    _company_master_cache = rows
+    return rows
+
+
 def _get_company_sector_map():
     """
     company_master(東証上場銘柄一覧、業種区分つき)から、
     企業名→独自セクター名 の対応表を作る。取得できなければ
     SECTOR_COMPANIESによる従来の対応表にフォールバックする。
     """
-    try:
-        rows = sb.select_all("company_master", {"select": "name,industry"})
-    except Exception:
-        rows = []
+    rows = _get_company_master_rows()
 
     if not rows:
         return dict(COMPANY_TO_SECTOR), []
@@ -476,6 +494,89 @@ def _get_company_sector_map():
     return mapping, all_names
 
 
+def resolve_watchlist_entries(watchlist):
+    """
+    WATCHLISTの各項目(証券コード or 会社名の一部・全部)を、
+    company_masterに登録されている正式な銘柄名に変換する。
+    見つからない場合は、入力された文字列をそのまま使う。
+    """
+    rows = _get_company_master_rows()
+    if not rows:
+        return list(watchlist)
+
+    by_code = {str(r.get("code")): r.get("name") for r in rows if r.get("code")}
+
+    resolved = []
+    for entry in watchlist:
+        entry_str = str(entry).strip()
+        if entry_str in by_code:
+            resolved.append(by_code[entry_str])
+            continue
+        exact = [r["name"] for r in rows if r.get("name") == entry_str]
+        if exact:
+            resolved.append(exact[0])
+            continue
+        partial = [r["name"] for r in rows if r.get("name") and entry_str in r["name"]]
+        if partial:
+            resolved.append(partial[0])
+            continue
+        resolved.append(entry_str)  # 見つからない場合はそのまま(スコアは個別ニュース分のみ)
+    return resolved
+
+
+# 100点満点方式:50点を「中立」の基準点とし、好材料/悪材料に応じて加減点する。
+# 重みは目安であり、個別ニュースでの言及を最も重視している。
+STOCK_SCORE_WEIGHT_MACRO = 5          # マクロ要因(為替・金利)のセクター加点1につき
+STOCK_SCORE_WEIGHT_SECTOR_NEWS = 8    # セクター単位のニュース傾向(net)1につき
+STOCK_SCORE_WEIGHT_INDIVIDUAL = 15    # 個別銘柄への好材料/悪材料ニュース1件につき
+STOCK_SCORE_BASE = 50
+
+
+def _compute_company_score(company, sector, macro_by_sector, sentiment_by_sector, news_items):
+    """1銘柄ぶんのスコアと理由リストを計算する(100点満点方式)。"""
+    score = STOCK_SCORE_BASE
+    reasons = []
+
+    if sector:
+        macro_score = macro_by_sector.get(sector, 0)
+        if macro_score != 0:
+            score += macro_score * STOCK_SCORE_WEIGHT_MACRO
+            reasons.append(
+                f"セクター({sector})のマクロ要因: {macro_score:+d}"
+                f"(点数へ換算 {macro_score * STOCK_SCORE_WEIGHT_MACRO:+d})"
+            )
+
+        sent = sentiment_by_sector.get(sector)
+        if sent:
+            net = sent["positive"] - sent["negative"]
+            if net != 0:
+                score += net * STOCK_SCORE_WEIGHT_SECTOR_NEWS
+                reasons.append(
+                    f"セクターニュース傾向: {sent['direction']}"
+                    f"({net * STOCK_SCORE_WEIGHT_SECTOR_NEWS:+d})"
+                )
+
+    pos_headlines, neg_headlines = [], []
+    for it in news_items:
+        text = it["title"] + " " + it["description"]
+        if company not in text:
+            continue
+        if any(pw in text for pw in POSITIVE_WORDS):
+            pos_headlines.append(it["title"])
+        if any(nw in text for nw in NEGATIVE_WORDS):
+            neg_headlines.append(it["title"])
+
+    if pos_headlines:
+        score += STOCK_SCORE_WEIGHT_INDIVIDUAL * len(pos_headlines)
+        reasons.append("個別ニュース(好材料): " + "、".join(pos_headlines[:2]))
+    if neg_headlines:
+        score -= STOCK_SCORE_WEIGHT_INDIVIDUAL * len(neg_headlines)
+        reasons.append("個別ニュース(悪材料): " + "、".join(neg_headlines[:2]))
+
+    score = max(0, min(100, score))
+    return score, reasons
+
+
 def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
     """
     戻り値: [{"company":..., "sector":..., "score": n, "reasons": [...]}, ...]
@@ -492,56 +593,44 @@ def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
     for name in all_names:
         target_companies.setdefault(name, None)
 
-    # 100点満点方式:50点を「中立」の基準点とし、好材料/悪材料に応じて加減点する。
-    # 重みは目安であり、個別ニュースでの言及を最も重視している。
-    WEIGHT_MACRO = 5          # マクロ要因(為替・金利)のセクター加点1につき
-    WEIGHT_SECTOR_NEWS = 8    # セクター単位のニュース傾向(net)1につき
-    WEIGHT_INDIVIDUAL = 15    # 個別銘柄への好材料/悪材料ニュース1件につき
-    BASE_SCORE = 50
-
     results = []
     for company in target_companies:
         if len(company) < 2:
             continue
         sector = company_sector_map.get(company)
-        score = BASE_SCORE
-        reasons = []
-
-        if sector:
-            macro_score = macro_by_sector.get(sector, 0)
-            if macro_score != 0:
-                score += macro_score * WEIGHT_MACRO
-                reasons.append(f"セクター({sector})のマクロ要因: {macro_score:+d}(点数へ換算 {macro_score * WEIGHT_MACRO:+d})")
-
-            sent = sentiment_by_sector.get(sector)
-            if sent:
-                net = sent["positive"] - sent["negative"]
-                if net != 0:
-                    score += net * WEIGHT_SECTOR_NEWS
-                    reasons.append(f"セクターニュース傾向: {sent['direction']}({net * WEIGHT_SECTOR_NEWS:+d})")
-
-        pos_headlines, neg_headlines = [], []
-        for it in news_items:
-            text = it["title"] + " " + it["description"]
-            if company not in text:
-                continue
-            if any(pw in text for pw in POSITIVE_WORDS):
-                pos_headlines.append(it["title"])
-            if any(nw in text for nw in NEGATIVE_WORDS):
-                neg_headlines.append(it["title"])
-
-        if pos_headlines:
-            score += WEIGHT_INDIVIDUAL * len(pos_headlines)
-            reasons.append("個別ニュース(好材料): " + "、".join(pos_headlines[:2]))
-        if neg_headlines:
-            score -= WEIGHT_INDIVIDUAL * len(neg_headlines)
-            reasons.append("個別ニュース(悪材料): " + "、".join(neg_headlines[:2]))
-
-        score = max(0, min(100, score))
-
-        if score != BASE_SCORE:
+        score, reasons = _compute_company_score(
+            company, sector, macro_by_sector, sentiment_by_sector, news_items
+        )
+        if score != STOCK_SCORE_BASE:
             results.append({"company": company, "sector": sector, "score": score, "reasons": reasons})
 
+    results.sort(key=lambda x: -x["score"])
+    return results
+
+
+def get_watchlist_scores(watchlist, macro_scores, sector_sentiment, news_items):
+    """
+    ウォッチリスト(登録銘柄)のスコアを、点数に関わらず常に計算して返す。
+    WATCHLISTの項目は証券コード・会社名のどちらでも指定できる
+    (resolve_watchlist_entriesで正式名称に変換してから計算する)。
+
+    戻り値: [{"company":..., "sector":..., "score": n, "reasons": [...]}, ...]
+    """
+    if not watchlist:
+        return []
+    macro_by_sector = {m["sector"]: m["score"] for m in macro_scores}
+    sentiment_by_sector = {s["sector"]: s for s in sector_sentiment}
+    company_sector_map, _ = _get_company_sector_map()
+
+    resolved_names = resolve_watchlist_entries(watchlist)
+
+    results = []
+    for company in resolved_names:
+        sector = company_sector_map.get(company)
+        score, reasons = _compute_company_score(
+            company, sector, macro_by_sector, sentiment_by_sector, news_items
+        )
+        results.append({"company": company, "sector": sector, "score": score, "reasons": reasons})
     results.sort(key=lambda x: -x["score"])
     return results
 
@@ -683,7 +772,7 @@ def render_card(title, sentiment, value_text=None, highlight=None, sublines=None
     """
 
 
-def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, notable_stocks=None, theme_heat=None, macro_scores=None, stock_ranking=None):
+def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, notable_stocks=None, theme_heat=None, macro_scores=None, stock_ranking=None, watchlist_scores=None):
     rows_html = ""
     if ust:
         sentiment = "positive" if ust["trend"] == "低下" else ("negative" if ust["trend"] == "上昇" else "neutral")
@@ -746,6 +835,22 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
     if notable_stocks:
         for s in notable_stocks[:10]:
             stocks_html += render_card(s["company"], "neutral", sublines=s["headlines"])
+
+    watchlist_html = ""
+    if watchlist_scores:
+        for r in watchlist_scores:
+            sentiment = "positive" if r["score"] > 55 else ("negative" if r["score"] < 45 else "neutral")
+            sub_html = "".join(f"<div class='card-sub'>・{reason}</div>" for reason in r["reasons"])
+            sector_label = f" ({r['sector']})" if r.get("sector") else ""
+            watchlist_html += f"""
+            <div class="card card-{sentiment}">
+              <div class="card-head">
+                <span class="card-title">{r['company']}<span style="color:var(--text-mute); font-weight:400; font-size:11.5px;">{sector_label}</span></span>
+                <span class="value-badge value-{sentiment}">{r['score']}点 / 100点</span>
+              </div>
+              {sub_html if sub_html else "<div class='card-sub'>・目立った材料なし(中立)</div>"}
+            </div>
+            """
 
     ranking_html = ""
     if stock_ranking:
@@ -853,6 +958,9 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
   <h2>市況サマリー</h2>
   {rows_html}
 
+  <h2>あなたの登録銘柄</h2>
+  {watchlist_html if watchlist_html else '<p>WATCHLISTに銘柄が登録されていません(generate_report.py の WATCHLIST に追加してください)。</p>'}
+
   <h2>短観 業況判断DI</h2>
   {tankan_html if tankan_html else '<p>データがまだありません。</p>'}
 
@@ -903,9 +1011,10 @@ if __name__ == "__main__":
     theme_heat = analyze_theme_heat(news_items) if news_items else []
     macro_scores = analyze_macro_sector_scores(fx, ust)
     stock_ranking = analyze_stock_ranking(macro_scores, sector_sentiment, news_items)
+    watchlist_scores = get_watchlist_scores(WATCHLIST, macro_scores, sector_sentiment, news_items)
     html = generate_html(
         jgb, ust, wti, fx, tankan, commentary,
-        sector_sentiment, notable_stocks, theme_heat, macro_scores, stock_ranking,
+        sector_sentiment, notable_stocks, theme_heat, macro_scores, stock_ranking, watchlist_scores,
     )
 
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
