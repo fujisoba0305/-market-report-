@@ -439,7 +439,7 @@ def fetch_jpx_listed_companies():
 def save_company_master(rows, db_path=DB_PATH):
     """
     fetch_jpx_listed_companies() の結果をSupabaseに保存する。
-    ヘッダー行から「コード」「銘柄名」の列を自動で探して使う。
+    ヘッダー行から「コード」「銘柄名」「33業種区分」の列を自動で探して使う。
     """
     if not rows:
         return 0
@@ -450,6 +450,11 @@ def save_company_master(rows, db_path=DB_PATH):
     except IndexError:
         raise ValueError(f"コード・銘柄名の列が見つかりませんでした。ヘッダー: {header}")
 
+    industry_idx = None
+    candidates = [i for i, h in enumerate(header) if h and "33業種区分" in str(h)]
+    if candidates:
+        industry_idx = candidates[0]
+
     fetched_at = datetime.now().isoformat()
     out_rows = []
     for r in rows[1:]:
@@ -458,7 +463,10 @@ def save_company_master(rows, db_path=DB_PATH):
         code, name = r[code_idx], r[name_idx]
         if not code or not name:
             continue
-        out_rows.append({"code": str(code), "name": str(name), "fetched_at": fetched_at})
+        industry = r[industry_idx] if industry_idx is not None and len(r) > industry_idx else None
+        out_rows.append(
+            {"code": str(code), "name": str(name), "industry": industry, "fetched_at": fetched_at}
+        )
 
     # 大量データのため1000件ずつ分けて送信する
     total = 0
