@@ -291,7 +291,6 @@ def extract_notable_stocks(news_items):
     for it in news_items:
         text = it["title"] + " " + it["description"]
         for company in all_companies:
-            # 短すぎる名前(1文字など)は誤検出が多いため除外
             if len(company) < 2:
                 continue
             if company in text:
@@ -405,31 +404,95 @@ COMPANY_TO_SECTOR = {
     company: sector for sector, companies in SECTOR_COMPANIES.items() for company in companies
 }
 
+# 東証33業種区分 → 本アプリの独自セクターへの対応表(完全一致ではなく近似)。
+# ここに無い業種(サービス業など幅広すぎるもの)は、セクター加点の対象外になるが、
+# 個別ニュースでの好材料/悪材料の加点は引き続き受けられる。
+JPX_INDUSTRY_TO_SECTOR = {
+    "銀行業": "銀行",
+    "卸売業": "商社",
+    "小売業": "小売",
+    "情報・通信業": "通信",
+    "石油・石炭製品": "エネルギー",
+    "電気・ガス業": "エネルギー",
+    "不動産業": "不動産",
+    "機械": "機械・FA",
+    "輸送用機器": "自動車",
+    "電気機器": "半導体",
+    "精密機器": "半導体",
+    "医薬品": "医薬品",
+    "陸運業": "インバウンド",
+    "海運業": "インバウンド",
+    "空運業": "インバウンド",
+}
+
+
+def _get_company_sector_map():
+    """
+    company_master(東証上場銘柄一覧、業種区分つき)から、
+    企業名→独自セクター名 の対応表を作る。取得できなければ
+    SECTOR_COMPANIESによる従来の対応表にフォールバックする。
+    """
+    try:
+        rows = sb.select_all("company_master", {"select": "name,industry"})
+    except Exception:
+        rows = []
+
+    if not rows:
+        return dict(COMPANY_TO_SECTOR), []
+
+    mapping = {}
+    all_names = []
+    for r in rows:
+        name = r.get("name")
+        if not name:
+            continue
+        all_names.append(name)
+        industry = r.get("industry")
+        sector = JPX_INDUSTRY_TO_SECTOR.get(industry)
+        if sector:
+            mapping[name] = sector
+    # 独自リストの対応も残しておく(業種区分でカバーできない防衛等のため)
+    for company, sector in COMPANY_TO_SECTOR.items():
+        mapping.setdefault(company, sector)
+    return mapping, all_names
+
 
 def analyze_stock_ranking(macro_scores, sector_sentiment, news_items):
     """
     戻り値: [{"company":..., "sector":..., "score": n, "reasons": [...]}, ...]
             (点数の高い順)
+    東証上場銘柄一覧(company_master)が使える場合は全銘柄が対象になり、
+    使えない場合は手作業で用意した主要企業のみが対象になる。
     """
     macro_by_sector = {m["sector"]: m["score"] for m in macro_scores}
     sentiment_by_sector = {s["sector"]: s for s in sector_sentiment}
 
+    company_sector_map, all_names = _get_company_sector_map()
+    # 全銘柄名も対象に含める(セクターが分からなくても個別ニュース加点は入る)
+    target_companies = dict.fromkeys(company_sector_map.keys())
+    for name in all_names:
+        target_companies.setdefault(name, None)
+
     results = []
-    for company, sector in COMPANY_TO_SECTOR.items():
+    for company in target_companies:
+        if len(company) < 2:
+            continue
+        sector = company_sector_map.get(company)
         score = 0
         reasons = []
 
-        macro_score = macro_by_sector.get(sector, 0)
-        if macro_score != 0:
-            score += macro_score
-            reasons.append(f"セクター({sector})のマクロ要因: {macro_score:+d}点")
+        if sector:
+            macro_score = macro_by_sector.get(sector, 0)
+            if macro_score != 0:
+                score += macro_score
+                reasons.append(f"セクター({sector})のマクロ要因: {macro_score:+d}点")
 
-        sent = sentiment_by_sector.get(sector)
-        if sent:
-            net = sent["positive"] - sent["negative"]
-            if net != 0:
-                score += net
-                reasons.append(f"セクターニュース傾向: {sent['direction']}")
+            sent = sentiment_by_sector.get(sector)
+            if sent:
+                net = sent["positive"] - sent["negative"]
+                if net != 0:
+                    score += net
+                    reasons.append(f"セクターニュース傾向: {sent['direction']}")
 
         pos_headlines, neg_headlines = [], []
         for it in news_items:
@@ -661,10 +724,11 @@ def generate_html(jgb, ust, wti, fx, tankan, commentary, sector_sentiment=None, 
         for i, r in enumerate(stock_ranking[:10], start=1):
             sentiment = "positive" if r["score"] > 0 else "negative"
             sub_html = "".join(f"<div class='card-sub'>・{reason}</div>" for reason in r["reasons"])
+            sector_label = f" ({r['sector']})" if r.get("sector") else ""
             ranking_html += f"""
             <div class="card card-{sentiment}">
               <div class="card-head">
-                <span class="card-title"><span class="rank">{i}</span>{r['company']}<span style="color:var(--text-mute); font-weight:400; font-size:11.5px;"> ({r['sector']})</span></span>
+                <span class="card-title"><span class="rank">{i}</span>{r['company']}<span style="color:var(--text-mute); font-weight:400; font-size:11.5px;">{sector_label}</span></span>
                 <span class="value-badge value-{sentiment}">{r['score']:+d}点</span>
               </div>
               {sub_html}
