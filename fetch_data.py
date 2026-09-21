@@ -26,6 +26,7 @@ import csv
 import io
 import json
 import os
+import re
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -398,6 +399,76 @@ def parse_xlsx_generic(path, sheet_index=1):
 
 
 # ============================================================
+# ⑨ 東証上場銘柄一覧(全銘柄名の辞書として使う)
+# ============================================================
+#
+# 「ニュースで話題の銘柄」の対象を、手作業で選んだ数十社だけでなく
+# 東証上場銘柄(約4,000社)全体に広げるために使う。
+# JPXが毎月末時点のデータをExcelで無料公開している。
+# ファイルのURLは月ごとにランダムな符号を含むため、まずページを解析して
+# 現在のリンクを見つける。
+
+JPX_LISTED_INDEX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+
+
+def fetch_jpx_listed_companies_link():
+    """東証上場銘柄一覧(data_j.xlsx)の現在のダウンロードURLを取得する。"""
+    raw = _http_get(JPX_LISTED_INDEX_URL)
+    html = raw.decode("utf-8", errors="replace")
+    match = re.search(r'href="([^"]+?data_j\.xlsx)"', html)
+    if not match:
+        raise ValueError("data_j.xlsxへのリンクが見つかりませんでした。ページ構成が変わった可能性があります。")
+    url = match.group(1)
+    if not url.startswith("http"):
+        url = "https://www.jpx.co.jp" + url
+    return url
+
+
+def fetch_jpx_listed_companies():
+    """
+    東証上場銘柄一覧を取得し、行データ(2次元リスト)として返す。
+    1行目がヘッダー(列名)になっている想定。
+    """
+    url = fetch_jpx_listed_companies_link()
+    tmp_path = "data_j.xlsx"
+    download_file(url, tmp_path)
+    rows = parse_xlsx_generic(tmp_path)
+    return rows
+
+
+def save_company_master(rows, db_path=DB_PATH):
+    """
+    fetch_jpx_listed_companies() の結果をSupabaseに保存する。
+    ヘッダー行から「コード」「銘柄名」の列を自動で探して使う。
+    """
+    if not rows:
+        return 0
+    header = rows[0]
+    try:
+        code_idx = [i for i, h in enumerate(header) if h and "コード" in str(h)][0]
+        name_idx = [i for i, h in enumerate(header) if h and "銘柄名" in str(h)][0]
+    except IndexError:
+        raise ValueError(f"コード・銘柄名の列が見つかりませんでした。ヘッダー: {header}")
+
+    fetched_at = datetime.now().isoformat()
+    out_rows = []
+    for r in rows[1:]:
+        if len(r) <= max(code_idx, name_idx):
+            continue
+        code, name = r[code_idx], r[name_idx]
+        if not code or not name:
+            continue
+        out_rows.append({"code": str(code), "name": str(name), "fetched_at": fetched_at})
+
+    # 大量データのため1000件ずつ分けて送信する
+    total = 0
+    for i in range(0, len(out_rows), 1000):
+        chunk = out_rows[i : i + 1000]
+        total += sb.upsert("company_master", chunk, on_conflict="code")
+    return total
+
+
+# ============================================================
 # ⑦ ニュース(NHK NEWS WEB RSS)
 # ============================================================
 #
@@ -763,6 +834,15 @@ if __name__ == "__main__":
             print(f"{len(news_items)}件取得、Supabaseに {n} 件保存しました。")
         except Exception as e2:
             print("取得エラー:", e2)
+
+    print("\n=== JPX: 東証上場銘柄一覧を取得・保存 ===")
+    try:
+        rows = fetch_jpx_listed_companies()
+        print(f"{len(rows)-1}社ぶんのデータを取得しました。ヘッダー: {rows[0]}")
+        n = save_company_master(rows)
+        print(f"-> Supabaseに {n} 件保存しました")
+    except Exception as e:
+        print("取得エラー:", e)
 
     print("\n=== JPX: 投資部門別売買状況(株式・週間)のリンク取得テスト ===")
     try:
