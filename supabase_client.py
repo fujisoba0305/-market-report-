@@ -79,7 +79,27 @@ def select(table, params=None):
     return json.loads(raw)
 
 
-def delete(table, params):
+def select_all(table, params=None, page_size=1000):
+    """
+    select() のページング版。PostgRESTは1回のリクエストで返す件数に
+    上限があるため、company_masterのような大量データ(数千件)は
+    これで全件取得する。
+    """
+    params = dict(params or {})
+    all_rows = []
+    offset = 0
+    while True:
+        params["limit"] = str(page_size)
+        params["offset"] = str(offset)
+        page = select(table, params)
+        if not page:
+            break
+        all_rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return all_rows
+
     """条件に一致する行を削除する。paramsはPostgRESTのフィルタ書式。"""
     url = f"{SUPABASE_URL}/rest/v1/{table}?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers=_headers(), method="DELETE")
