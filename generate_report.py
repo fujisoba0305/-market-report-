@@ -274,15 +274,26 @@ def analyze_sector_sentiment(news_items):
 
 def extract_notable_stocks(news_items):
     """
-    ニュース見出しに登場する主要企業名を抽出する。
-    SECTOR_COMPANIES(セクター別の企業リスト)の全企業を対象にすることで、
-    幅広い業種の企業名にヒットしやすくしている。
+    ニュース見出しに登場する企業名を抽出する。
+    company_master(東証上場銘柄一覧、Supabaseに保存済み)があればそちらを
+    優先して使い(全銘柄対応)、無ければSECTOR_COMPANIESのリストで代替する。
     """
-    all_companies = sorted({c for companies in SECTOR_COMPANIES.values() for c in companies})
+    try:
+        master_rows = sb.select_all("company_master", {"select": "name"})
+        all_companies = sorted({r["name"] for r in master_rows if r.get("name")})
+    except Exception:
+        all_companies = []
+
+    if not all_companies:
+        all_companies = sorted({c for companies in SECTOR_COMPANIES.values() for c in companies})
+
     results = {}
     for it in news_items:
         text = it["title"] + " " + it["description"]
         for company in all_companies:
+            # 短すぎる名前(1文字など)は誤検出が多いため除外
+            if len(company) < 2:
+                continue
             if company in text:
                 results.setdefault(company, []).append(it["title"])
     return [{"company": c, "headlines": h[:2]} for c, h in results.items()]
