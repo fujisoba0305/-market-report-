@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>今週の相場レポート</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0E1015;
+    --panel: #171B23;
+    --border: #262C37;
+    --text: #EEEAE1;
+    --text-dim: #A4ABBA;
+    --text-mute: #5C6272;
+    --positive: #8FC49B;
+    --positive-bg: rgba(143,196,155,0.14);
+    --negative: #E2896A;
+    --negative-bg: rgba(226,137,106,0.14);
+    --gold: #D9B54A;
+    --gold-bg: rgba(217,181,74,0.16);
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Noto Sans JP", "Hiragino Sans", sans-serif;
+    max-width: 520px; margin: 0 auto; padding: 32px 20px 56px;
+    -webkit-font-smoothing: antialiased;
+  }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 28px; }
+  h1 {
+    font-family: "Shippori Mincho", serif; font-weight: 800;
+    font-size: 26px; letter-spacing: 0.02em; margin: 0 0 6px;
+  }
+  .updated { color: var(--text-mute); font-size: 12px; }
+  h2 {
+    font-family: "Shippori Mincho", serif; font-weight: 600;
+    font-size: 16px; color: var(--text);
+    margin: 36px 0 14px; padding-left: 10px;
+    border-left: 3px solid var(--gold);
+  }
+  .row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 11px 2px; border-bottom: 1px solid var(--border); font-size: 14px;
+  }
+  .row-label { color: var(--text-dim); }
+  .value-badge {
+    font-weight: 700; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    padding: 3px 10px; border-radius: 4px; white-space: nowrap;
+  }
+  .value-positive { background: var(--positive-bg); color: var(--positive); }
+  .value-negative { background: var(--negative-bg); color: var(--negative); }
+  .value-neutral  { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+  .value-gold     { background: var(--gold-bg); color: var(--gold); }
+  p { font-size: 14px; line-height: 1.85; color: var(--text-dim); }
+  .disclaimer { font-size: 11px; color: var(--text-mute); margin-top: 28px; line-height: 1.7; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--text-mute);
+    border-radius: 4px; padding: 13px 15px; margin-bottom: 10px;
+  }
+  .card-positive { border-left-color: var(--positive); }
+  .card-negative { border-left-color: var(--negative); }
+  .card-head { display: flex; justify-content: space-between; align-items: center; }
+  .card-title { font-weight: 600; font-size: 14.5px; color: var(--text); }
+  .card-sub { font-size: 11.5px; color: var(--text-mute); line-height: 1.75; padding-top: 4px; }
+  .card-highlight { font-size: 11.5px; color: var(--gold); font-weight: 600; padding-top: 6px; }
+  .rank {
+    display: inline-block; width: 18px; color: var(--text-mute);
+    font-family: "Shippori Mincho", serif; font-weight: 600; margin-right: 4px;
+  }
+  .bar-bg { background: var(--border); height: 4px; border-radius: 2px; margin: 8px 0 4px; }
+  .bar-fill { background: var(--gold); height: 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>今週の相場レポート</h1>
+    <div class="updated">2026年09月21日 01:21 生成・個人利用(ルールベース判定)</div>
+  </header>
+
+  <h2>市況サマリー</h2>
+  
+
+  <h2>短観 業況判断DI</h2>
+  <p>データがまだありません。</p>
+
+  <h2>コメント</h2>
+  <p>現時点では、判定に十分なデータが揃っていません。データ取得を進めてから再度ご確認ください。</p><p>※本レポートはルールベースの機械的な判定であり、投資助言ではありません。最終的な投資判断はご自身で行ってください。</p>
+
+  <h2>今日の有望銘柄ランキング(参考)</h2>
+  <p>判定に必要なデータがまだありません。</p>
+
+  <h2>為替・金利によるセクター影響</h2>
+  <p>判定に必要なデータがまだありません。</p>
+
+  <h2>今日のセクター(ニュースベース)</h2>
+  <p>該当するニュースがまだありません。</p>
+
+  <h2>テーマ熱量ランキング</h2>
+  <p>該当するニュースがまだありません。</p>
+
+  <h2>ニュースで話題の銘柄</h2>
+  <p>該当するニュースがまだありません。</p>
+
+  <p class="disclaimer">
+    セクター判定・注目銘柄・銘柄ランキングは、キーワードの単純な出現回数や
+    ルールベースの加減点に基づく簡易判定であり、実際の株価データは
+    使用していません。実際の株価動向を保証するものではなく、
+    投資助言でもありません。最終的な投資判断はご自身で行ってください。
+  </p>
+</body>
+</html>
