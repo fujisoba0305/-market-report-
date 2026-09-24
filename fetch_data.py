@@ -875,8 +875,13 @@ if __name__ == "__main__":
         "TK99F2000601GCQ03000": "中小企業非製造業",
     }
     try:
+        # 終了期は実行時点の四半期を使う(将来にわたって固定日付にならないように)
+        # 短観のAPIは四半期形式(YYYYQQ、01=1Q...04=4Q)を使う
+        now = datetime.now()
+        current_quarter = (now.month - 1) // 3 + 1
+        end_quarter = f"{now.year}{current_quarter:02d}"
         result = fetch_boj_series(
-            "CO", list(tankan_codes.keys()), "202001", "202604"
+            "CO", list(tankan_codes.keys()), "202001", end_quarter
         )
         n = save_boj_series("CO", result, DB_PATH)
         print(f"-> Supabaseに {n} 件保存しました")
@@ -892,7 +897,9 @@ if __name__ == "__main__":
 
     try:
         print("\n--- ドル円(FXERD04)を取得・保存 ---")
-        result = fetch_boj_series("FM08", ["FXERD04"], "202601", "202609")
+        # 終了日は実行時点の年月を使う(将来にわたって固定日付にならないように)
+        end_month = datetime.now().strftime("%Y%m")
+        result = fetch_boj_series("FM08", ["FXERD04"], "202601", end_month)
         n = save_boj_series("FM08", result, DB_PATH)
         print(f"-> Supabaseに {n} 件保存しました")
         # 直近の値を確認表示
