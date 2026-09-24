@@ -897,9 +897,18 @@ if __name__ == "__main__":
 
     try:
         print("\n--- ドル円(FXERD04)を取得・保存 ---")
-        # 終了日は実行時点の年月を使う(将来にわたって固定日付にならないように)
-        end_month = datetime.now().strftime("%Y%m")
-        result = fetch_boj_series("FM08", ["FXERD04"], "202601", end_month)
+        # 開始日を1月固定にすると、件数上限に引っかかって最新日まで
+        #届かないことがあるため、直近2ヶ月ぶんだけを取得するようにする
+        # (毎日蓄積していけば、Supabase側には結局過去分もどんどん貯まっていく)
+        now = datetime.now()
+        start_month_dt = now.replace(day=1)
+        for _ in range(2):
+            prev_month = start_month_dt.month - 1 or 12
+            prev_year = start_month_dt.year - (1 if start_month_dt.month == 1 else 0)
+            start_month_dt = start_month_dt.replace(year=prev_year, month=prev_month, day=1)
+        start_month = start_month_dt.strftime("%Y%m")
+        end_month = now.strftime("%Y%m")
+        result = fetch_boj_series("FM08", ["FXERD04"], start_month, end_month)
         n = save_boj_series("FM08", result, DB_PATH)
         print(f"-> Supabaseに {n} 件保存しました")
         # 直近の値を確認表示
