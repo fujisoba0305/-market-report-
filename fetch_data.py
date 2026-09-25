@@ -612,6 +612,52 @@ def save_stock_prices(symbol, rows, db_path=DB_PATH):
 
 
 # ============================================================
+# ⑩ 為替(Yahoo Finance 非公式チャートAPI、ドル円の代替ソース)
+# ============================================================
+#
+# 日銀のドル円データの更新が止まっていることがあるため、代わりに
+# Yahoo Financeの非公式チャートAPIから、ほぼリアルタイムに近い
+# レートを取得する。個人利用を前提とする(非公式APIのため、将来
+# 仕様変更やアクセス制限が入る可能性がある点に留意)。
+
+YAHOO_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+}
+
+
+def fetch_yahoo_usdjpy():
+    """
+    Yahoo Financeの非公式チャートAPIから、USD/JPYの直近レートを取得する。
+    戻り値: {"rate": float, "timestamp": int(UNIX秒)} または None
+    """
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/USDJPY=X"
+    req = urllib.request.Request(url, headers=YAHOO_HEADERS)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+        raw = res.read()
+    data = json.loads(raw)
+    result = data.get("chart", {}).get("result")
+    if not result:
+        return None
+    meta = result[0].get("meta", {})
+    price = meta.get("regularMarketPrice")
+    timestamp = meta.get("regularMarketTime")
+    if price is None or timestamp is None:
+        return None
+    return {"rate": float(price), "timestamp": int(timestamp)}
+
+
+def save_fx_rate(pair, date, rate, source, db_path=DB_PATH):
+    """為替レートをSupabaseに保存する(raw_fxテーブル)。"""
+    fetched_at = datetime.now().isoformat()
+    row = {"date": date, "pair": pair, "rate": rate, "source": source, "fetched_at": fetched_at}
+    return sb.upsert("raw_fx", [row], on_conflict="date,pair")
+
+
+# ============================================================
 # Supabase保存(テーブルは supabase_schema.sql で事前作成済み)
 # ============================================================
 def init_db(db_path=DB_PATH):
@@ -892,6 +938,18 @@ if __name__ == "__main__":
             vals = series["VALUES"]["VALUES"]
             recent = [(d, v) for d, v in zip(dates, vals) if v is not None][-2:]
             print(f"  {label}: 直近2件 {recent}")
+    except Exception as e:
+        print("取得エラー:", e)
+
+    print("\n=== ドル円(Yahoo Finance、代替ソース) ===")
+    try:
+        fx = fetch_yahoo_usdjpy()
+        if fx:
+            date_str = datetime.fromtimestamp(fx["timestamp"]).strftime("%Y-%m-%d")
+            n = save_fx_rate("USDJPY", date_str, fx["rate"], "Yahoo Finance")
+            print(f"取得できたレート: {fx['rate']:.2f}円 ({date_str}時点) -> Supabaseに{n}件保存しました")
+        else:
+            print("取得エラー: レスポンスの構造が想定と異なりました")
     except Exception as e:
         print("取得エラー:", e)
 
