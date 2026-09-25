@@ -708,10 +708,14 @@ def get_tankan_diffs():
 
 
 def get_recent_news(limit=80):
-    """Supabaseに保存されたニュースを新しい順に取得する。"""
+    """
+    Supabaseに保存されたニュースを新しい順に取得する。
+    pub_date(RSSの英語形式の日付文字列)は文字列としては正しい時系列順に
+    並ばないため、取得(保存)時刻である fetched_at で並べ替える。
+    """
     rows = sb.select(
         "raw_news",
-        {"select": "title,description,link,pub_date", "order": "pub_date.desc", "limit": str(limit)},
+        {"select": "title,description,link,pub_date", "order": "fetched_at.desc", "limit": str(limit)},
     )
     return [
         {"title": r["title"], "description": r.get("description") or "", "link": r["link"], "pub_date": r["pub_date"]}
