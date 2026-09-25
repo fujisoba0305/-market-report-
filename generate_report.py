@@ -141,7 +141,30 @@ def get_wti_trend():
 
 
 def get_usdjpy_trend():
-    """ドル円の直近1週間の動きを判定する。"""
+    """
+    ドル円の直近1週間の動きを判定する。
+    raw_fx(Yahoo Finance経由、代替ソース)を優先し、
+    データが無ければ raw_boj_series(日銀)にフォールバックする。
+    """
+    rows = sb.select(
+        "raw_fx",
+        {"select": "date,rate", "pair": "eq.USDJPY", "order": "date.asc"},
+    )
+    if len(rows) >= 2:
+        latest_date, latest_val = rows[-1]["date"], rows[-1]["rate"]
+        # 直近1週間分(営業日ベースでおよそ5-6件)より前の値と比較する
+        compare_idx = -6 if len(rows) >= 6 else 0
+        week_ago_val = rows[compare_idx]["rate"]
+        diff = latest_val - week_ago_val
+        trend = "円安" if diff > 0.3 else ("円高" if diff < -0.3 else "横ばい")
+        return {
+            "date": latest_date,
+            "value": latest_val,
+            "diff": round(diff, 2),
+            "trend": trend,
+        }
+
+    # フォールバック: 日銀のデータ
     rows = sb.select(
         "raw_boj_series",
         {"select": "date,value", "series_code": "eq.FXERD04", "order": "date.asc"},
